@@ -1,0 +1,114 @@
+# Plantilla de pipeline de IaC (Azure Pipelines) · Banca Global · referencia
+# Etapas de la página 9: Prerrequisitos y CI → Validación (plan) → Aprobación y CD.
+# La rama define el ambiente: dev → DEV, qa → QA, main → PDN.
+
+parameters:
+  - name: stackPath
+    type: string
+  - name: terraformVersion
+    type: string
+    default: "1.10.5"
+
+variables:
+  # Grupo de la Library por ambiente: region, tfstate_bucket, organization_id, centro_costo, owner (sin secretos en el repo).
+  - ${{ if eq(variables['Build.SourceBranchName'], 'main') }}:
+      - group: iac-pdn
+      - name: ambiente
+        value: pdn
+  - ${{ elseif eq(variables['Build.SourceBranchName'], 'qa') }}:
+      - group: iac-qa
+      - name: ambiente
+        value: qa
+  - ${{ else }}:
+      - group: iac-dev
+      - name: ambiente
+        value: dev
+  - name: stateKey
+    value: $(Build.Repository.Name)/${{ parameters.stackPath }}/terraform.tfstate
+
+stages:
+  - stage: CI
+    displayName: "Prerrequisitos y CI"
+    jobs:
+      - job: calidad
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - script: |
+              curl -sSLo tf.zip https://releases.hashicorp.com/terraform/${{ parameters.terraformVersion }}/terraform_${{ parameters.terraformVersion }}_linux_amd64.zip
+              unzip -o tf.zip -d $(Agent.ToolsDirectory)/terraform
+              echo "##vso[task.prependpath]$(Agent.ToolsDirectory)/terraform"
+            displayName: "Instalar Terraform"
+          - script: terraform fmt -check -recursive
+            displayName: "Formato"
+          - script: |
+              cd ${{ parameters.stackPath }}
+              terraform init -backend=false
+              terraform validate
+            displayName: "Validación de sintaxis"
+          - script: |
+              pip install --quiet checkov
+              checkov -d ${{ parameters.stackPath }} --compact
+            displayName: "Checkov (policy-as-code, página 3b)"
+
+  - stage: Plan
+    displayName: "Validación: plan"
+    dependsOn: CI
+    jobs:
+      - job: plan
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          # Service connection por cuenta con OIDC: credenciales temporales, sin access keys guardadas.
+          - task: AWSShellScript@1
+            displayName: "terraform plan"
+            inputs:
+              awsCredentials: "aws-oidc-${{ variables.ambiente }}"
+              regionName: "$(region)"
+              scriptType: inline
+              inlineScript: |
+                cd ${{ parameters.stackPath }}
+                terraform init \
+                  -backend-config="bucket=$(tfstate_bucket)" \
+                  -backend-config="key=$(stateKey)" \
+                  -backend-config="region=$(region)" \
+                  -backend-config="encrypt=true" \
+                  -backend-config="use_lockfile=true"
+                # TF_VAR_*: cada stack toma solo las variables que declara.
+                export TF_VAR_ambiente="$(ambiente)" TF_VAR_region="$(region)" TF_VAR_centro_costo="$(centro_costo)"
+                export TF_VAR_owner="$(owner)" TF_VAR_organization_id="$(organization_id)"
+                terraform plan -out=tfplan
+          - publish: ${{ parameters.stackPath }}/tfplan
+            artifact: tfplan
+
+  - stage: CD
+    displayName: "Aprobación y CD"
+    dependsOn: Plan
+    jobs:
+      # El environment define la aprobación: automática en dev, con aprobadores en qa y pdn.
+      - deployment: apply
+        environment: ${{ variables.ambiente }}
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - download: current
+                  artifact: tfplan
+                - task: AWSShellScript@1
+                  displayName: "terraform apply del plan aprobado"
+                  inputs:
+                    awsCredentials: "aws-oidc-${{ variables.ambiente }}"
+                    regionName: "$(region)"
+                    scriptType: inline
+                    inlineScript: |
+                      cd ${{ parameters.stackPath }}
+                      terraform init \
+                        -backend-config="bucket=$(tfstate_bucket)" \
+                        -backend-config="key=$(stateKey)" \
+                        -backend-config="region=$(region)" \
+                        -backend-config="encrypt=true" \
+                        -backend-config="use_lockfile=true"
+                      terraform apply $(Pipeline.Workspace)/tfplan/tfplan

@@ -1,0 +1,26 @@
+# Estado y archivos locales de Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+
+# Valores reales por ambiente y configuración de backend: nunca se versionan
+*.tfvars
+*.tfvars.json
+*.tfbackend
+!*.tfvars.example
+!*.tfbackend.example
+
+# Overrides locales
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Credenciales
+.terraformrc
+terraform.rc
+*.pem
+*.key

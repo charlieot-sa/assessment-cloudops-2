@@ -1,0 +1,8 @@
+# Ejemplo de valores para el ambiente PDN. Copiar como terraform.tfvars (no se versiona).
+# No incluir secretos: este archivo solo tiene valores de configuración.
+region                         = "us-east-1"
+ambiente                       = "pdn"
+centro_costo                   = "CC-DATOS-001"
+owner                          = "equipo-datos@bancaglobal.example"
+organization_id                = "o-xxxxxxxxxx"
+intelligent_tiering_after_days = 30
